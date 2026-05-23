@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">TrailMate</string>
+    <string name="app_name">WalkPlanner</string>
     <string name="notification_channel_name">Active Run</string>
     <string name="notification_channel_description">Shows live stats while a run or walk is in progress</string>
     <string name="notification_run_active">Run in progress</string>

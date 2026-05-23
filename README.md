@@ -1,6 +1,6 @@
-# TrailMate
+# WalkPlanner
 
-Hyper-local run and walk route planner for Android. TrailMate uses GPS and OpenStreetMap data to generate loop routes, tracks active sessions, and stores history offline.
+Hyper-local run and walk route planner for Android. WalkPlanner uses GPS and OpenStreetMap data to generate loop routes, tracks active sessions, and stores history offline.
 
 ## Architecture
 
@@ -13,9 +13,10 @@ data/ (Room, Retrofit/Overpass, DataStore, WorkManager, location)
 ```
 
 - **UI**: Jetpack Compose + Navigation Compose
-- **DI**: Manual wiring in `TrailMateApplication`
+- **DI**: Manual wiring in `WalkPlannerApplication`
 - **Maps**: OSMDroid with local tile cache (100 MB)
 - **Routes**: Overpass API with Room OSM graph cache (7-day expiry)
+- **Routing**: Bidirectional A* on an adjacency-list street graph with Haversine edge distances and highway safety weights
 - **Sessions**: WorkManager `SaveSessionWorker` persists completed runs
 - **Active tracking**: `ActiveRunForegroundService` with pause/stop notification actions
 

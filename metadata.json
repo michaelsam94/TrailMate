@@ -1,5 +1,5 @@
 {
-  "name": "TrailMate",
+  "name": "WalkPlanner",
   "description": "Hyper-local run & walk route planner that helps you generate safe paths and track your statistics offline.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]

@@ -7,11 +7,11 @@ plugins {
 }
 
 android {
-  namespace = "com.example"
+  namespace = "com.michael.walkplanner"
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   defaultConfig {
-    applicationId = "com.aistudio.trailmate.kyvjpw"
+    applicationId = "com.michael.walkplanner"
     minSdk = 24
     targetSdk = 36
     versionCode = 1
@@ -67,7 +67,6 @@ android {
 
 tasks.withType<Test> {
   useJUnitPlatform()
-  maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).coerceAtLeast(1)
 }
 
 // Configure the Secrets Gradle Plugin to use .env and .env.example files
