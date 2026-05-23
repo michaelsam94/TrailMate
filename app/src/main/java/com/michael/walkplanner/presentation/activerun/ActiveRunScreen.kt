@@ -32,7 +32,6 @@ import com.michael.walkplanner.domain.usecase.StopSessionUseCase
 import com.michael.walkplanner.presentation.OsmMapView
 import android.content.Context
 import com.michael.walkplanner.service.ActiveRunForegroundService
-import com.michael.walkplanner.service.ActiveRunServiceEvent
 import com.michael.walkplanner.service.ActiveRunStats
 import com.michael.walkplanner.service.ActiveRunTracker
 import com.michael.walkplanner.core.Constants
@@ -78,7 +77,7 @@ class ActiveRunViewModel(
 
     private var timerJob: Job? = null
     private var locationJob: Job? = null
-    private var serviceEventsJob: Job? = null
+    private var trackerSyncJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -87,11 +86,10 @@ class ActiveRunViewModel(
             }
         }
 
-        serviceEventsJob = viewModelScope.launch {
-            ActiveRunTracker.serviceEvents.collect { event ->
-                when (event) {
-                    ActiveRunServiceEvent.PauseToggle -> togglePause()
-                    ActiveRunServiceEvent.Stop -> stopSessionFromNotification()
+        trackerSyncJob = viewModelScope.launch {
+            ActiveRunTracker.session.collectLatest { trackerSession ->
+                if (trackerSession != null && trackerSession.sessionId == _trackingSession.value?.sessionId) {
+                    _trackingSession.value = trackerSession
                 }
             }
         }
@@ -112,25 +110,11 @@ class ActiveRunViewModel(
                 distanceCoveredKm = 0.0,
                 isPaused = false
             )
+            _trackingSession.value?.let { syncNotificationStats(it) }
 
             ActiveRunForegroundService.start(appContext, sessionId)
             startTracking()
         }
-    }
-
-    private fun stopSessionFromNotification() {
-        val session = _trackingSession.value ?: return
-        viewModelScope.launch {
-            stopSessionUseCase(session)
-            cleanupTracking()
-        }
-    }
-
-    private fun cleanupTracking() {
-        timerJob?.cancel()
-        locationJob?.cancel()
-        ActiveRunForegroundService.stop(appContext)
-        ActiveRunTracker.clear()
     }
 
     private fun syncNotificationStats(session: ActiveSession) {
@@ -147,7 +131,8 @@ class ActiveRunViewModel(
         } else {
             "${session.distanceCoveredKm} km"
         }
-        ActiveRunTracker.updateStats(
+        ActiveRunTracker.updateSession(
+            session,
             ActiveRunStats(
                 sessionId = session.sessionId,
                 paceDisplay = paceText,
@@ -252,6 +237,7 @@ class ActiveRunViewModel(
         val updated = session.copy(isPaused = !session.isPaused)
         _trackingSession.value = updated
         syncNotificationStats(updated)
+        ActiveRunForegroundService.refreshNotification(appContext)
     }
 
     fun stopSession(onComplete: () -> Unit) {
@@ -263,11 +249,23 @@ class ActiveRunViewModel(
         }
     }
 
-    override fun onCleared() {
-        super.onCleared()
-        serviceEventsJob?.cancel()
+    fun cleanupAfterExternalStop() {
         timerJob?.cancel()
         locationJob?.cancel()
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        trackerSyncJob?.cancel()
+        timerJob?.cancel()
+        locationJob?.cancel()
+    }
+
+    private fun cleanupTracking() {
+        timerJob?.cancel()
+        locationJob?.cancel()
+        ActiveRunForegroundService.stop(appContext)
+        ActiveRunTracker.clear()
     }
 
     private fun calculateDistance(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
@@ -312,6 +310,13 @@ fun ActiveRunScreen(
     val prefs by viewModel.userPrefs.collectAsState()
 
     var showStopDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        ActiveRunTracker.sessionEnded.collect {
+            viewModel.cleanupAfterExternalStop()
+            onCompleteSession()
+        }
+    }
 
     // Dialog when stopping run
     if (showStopDialog) {

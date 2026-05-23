@@ -38,8 +38,7 @@ class ActiveRunForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_PAUSE -> ActiveRunTracker.onPauseToggleFromNotification()
-            ACTION_STOP -> ActiveRunTracker.onStopFromNotification()
+            ACTION_REFRESH -> refreshForegroundNotification()
             else -> {
                 sessionId = intent?.getStringExtra(EXTRA_SESSION_ID).orEmpty()
                 acquireWakeLock()
@@ -57,20 +56,25 @@ class ActiveRunForegroundService : Service() {
         super.onDestroy()
     }
 
+    private fun refreshForegroundNotification() {
+        val stats = ActiveRunTracker.stats.value
+        val notification = buildNotification(stats)
+        val manager = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
+        manager.notify(Constants.NOTIFICATION_ID_ACTIVE_RUN, notification)
+        if (stats?.isPaused == true) {
+            releaseWakeLock()
+        } else {
+            acquireWakeLock()
+        }
+    }
+
     private fun startNotificationUpdates() {
         updateJob?.cancel()
         updateJob = serviceScope.launch {
             while (isActive) {
                 val stats = ActiveRunTracker.stats.value
                 if (stats != null) {
-                    val notification = buildNotification(stats)
-                    val manager = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
-                    manager.notify(Constants.NOTIFICATION_ID_ACTIVE_RUN, notification)
-                    if (stats.isPaused) {
-                        releaseWakeLock()
-                    } else {
-                        acquireWakeLock()
-                    }
+                    refreshForegroundNotification()
                 }
                 delay(2_000)
             }
@@ -89,17 +93,21 @@ class ActiveRunForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val pauseIntent = PendingIntent.getService(
+        val pauseIntent = PendingIntent.getBroadcast(
             this,
-            1,
-            Intent(this, ActiveRunForegroundService::class.java).apply { action = ACTION_PAUSE },
+            REQUEST_CODE_PAUSE,
+            Intent(this, ActiveRunNotificationReceiver::class.java).apply {
+                action = ActiveRunNotificationReceiver.ACTION_PAUSE
+            },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val stopIntent = PendingIntent.getService(
+        val stopIntent = PendingIntent.getBroadcast(
             this,
-            2,
-            Intent(this, ActiveRunForegroundService::class.java).apply { action = ACTION_STOP },
+            REQUEST_CODE_STOP,
+            Intent(this, ActiveRunNotificationReceiver::class.java).apply {
+                action = ActiveRunNotificationReceiver.ACTION_STOP
+            },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -147,14 +155,22 @@ class ActiveRunForegroundService : Service() {
 
     companion object {
         private const val EXTRA_SESSION_ID = "extra_session_id"
-        private const val ACTION_PAUSE = "com.michael.walkplanner.action.PAUSE_RUN"
-        private const val ACTION_STOP = "com.michael.walkplanner.action.STOP_RUN"
+        const val ACTION_REFRESH = "com.michael.walkplanner.action.REFRESH_RUN_NOTIFICATION"
+        private const val REQUEST_CODE_PAUSE = 1
+        private const val REQUEST_CODE_STOP = 2
 
         fun start(context: Context, sessionId: String) {
             val intent = Intent(context, ActiveRunForegroundService::class.java).apply {
                 putExtra(EXTRA_SESSION_ID, sessionId)
             }
             context.startForegroundService(intent)
+        }
+
+        fun refreshNotification(context: Context) {
+            val intent = Intent(context, ActiveRunForegroundService::class.java).apply {
+                action = ACTION_REFRESH
+            }
+            context.startService(intent)
         }
 
         fun stop(context: Context) {
