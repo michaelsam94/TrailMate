@@ -12,6 +12,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
@@ -286,23 +287,29 @@ fun PlanRouteScreen(
                                 }
 
                                 // Floating bubble to switch through choices
-                                FloatingActionButton(
-                                    onClick = {
-                                        activeIndex = (activeIndex + 1) % routes.size
-                                    },
-                                    containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                                    contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-                                    modifier = Modifier
-                                        .align(Alignment.TopEnd)
-                                        .padding(16.dp)
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.padding(horizontal = 12.dp)
+                                if (routes.size > 1) {
+                                    FloatingActionButton(
+                                        onClick = {
+                                            activeIndex = (activeIndex + 1) % routes.size
+                                        },
+                                        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                                        modifier = Modifier
+                                            .align(Alignment.TopEnd)
+                                            .padding(16.dp)
                                     ) {
-                                        Icon(Icons.Default.AltRoute, contentDescription = null)
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text("Next Option (${activeIndex + 1}/${routes.size})", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.padding(horizontal = 12.dp)
+                                        ) {
+                                            Icon(Icons.Default.AltRoute, contentDescription = null)
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                "Next Option (${activeIndex + 1}/${routes.size})",
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 12.sp
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -325,31 +332,37 @@ fun PlanRouteScreen(
                                     verticalArrangement = Arrangement.SpaceBetween
                                 ) {
                                     Column {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
-                                            Text(
-                                                text = "Option ${activeIndex + 1} (${calculateRouteDirection(activeRoute)}): ${activeRoute.surfaceType.name.lowercase().capitalize(Locale.ROOT)} Trace",
-                                                style = MaterialTheme.typography.titleMedium,
-                                                fontWeight = FontWeight.Bold,
-                                                color = MaterialTheme.colorScheme.onSurface
-                                            )
+                                        Text(
+                                            text = "Option ${activeIndex + 1} (${routeOptionLabel(activeRoute)}): ${activeRoute.surfaceType.name.lowercase().capitalize(Locale.ROOT)} Trace",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
 
-                                            // Safety Rating Chip
-                                            Card(
-                                                shape = RoundedCornerShape(8.dp),
-                                                colors = CardDefaults.cardColors(
-                                                    containerColor = MaterialTheme.colorScheme.primaryContainer
-                                                )
+                                        Spacer(modifier = Modifier.height(8.dp))
+
+                                        Surface(
+                                            shape = RoundedCornerShape(20.dp),
+                                            color = MaterialTheme.colorScheme.primaryContainer
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                                             ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Shield,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(6.dp))
                                                 Text(
-                                                    text = "Safety Score: ${Math.round(activeRoute.safetyScore * 100)}%",
-                                                    fontSize = 11.sp,
-                                                    fontWeight = FontWeight.ExtraBold,
-                                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                                    text = "${Math.round(activeRoute.safetyScore * 100)}% safety",
+                                                    fontSize = 13.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = MaterialTheme.colorScheme.onPrimaryContainer
                                                 )
                                             }
                                         }
@@ -420,43 +433,47 @@ fun PlanRouteScreen(
     }
 }
 
-private fun calculateRouteDirection(route: Route): String {
+private fun routeOptionLabel(route: Route): String {
     val waypoints = route.waypoints
-    if (waypoints.size < 3) return "Unknown"
+    if (waypoints.size < 3) return "Mixed"
     val start = waypoints.first()
-    
-    var maxDist = 0.0
-    var furthest = start
-    val latRad = start.lat * PI / 180.0
-    val cosLat = cos(latRad)
-    
-    for (wp in waypoints) {
-        val dLat = wp.lat - start.lat
-        val dLngScaled = (wp.lng - start.lng) * cosLat
-        val distSq = dLat * dLat + dLngScaled * dLngScaled
-        if (distSq > maxDist) {
-            maxDist = distSq
-            furthest = wp
-        }
+    val next = waypoints[1]
+    val cosLat = cos(start.lat * PI / 180.0)
+    var firstBearing = atan2(
+        next.lat - start.lat,
+        (next.lng - start.lng) * cosLat
+    ) * 180.0 / PI
+    if (firstBearing < 0) firstBearing += 360.0
+    val sector = (((firstBearing + 45.0) % 360.0) / 90.0).toInt().coerceIn(0, 3)
+    val compass = when (sector) {
+        0 -> "North"
+        1 -> "East"
+        2 -> "South"
+        3 -> "West"
+        else -> "Mixed"
     }
-    
-    val dLat = furthest.lat - start.lat
-    val dLngScaled = (furthest.lng - start.lng) * cosLat
-    val angleRad = atan2(dLat, dLngScaled)
-    var angleDeg = angleRad * 180.0 / PI
-    if (angleDeg < 0) {
-        angleDeg += 360.0
+    val turns = StringBuilder()
+    for (i in 1 until minOf(waypoints.size - 1, 10)) {
+        val prev = waypoints[i - 1]
+        val curr = waypoints[i]
+        val nxt = waypoints[i + 1]
+        val inB = atan2(curr.lat - prev.lat, (curr.lng - prev.lng) * cosLat)
+        val outB = atan2(nxt.lat - curr.lat, (nxt.lng - curr.lng) * cosLat)
+        var delta = (outB - inB) * 180.0 / PI
+        while (delta > 180.0) delta -= 360.0
+        while (delta < -180.0) delta += 360.0
+        if (abs(delta) < 25.0) continue
+        turns.append(if (delta > 0) 'R' else 'L')
+        if (turns.length >= 2) break
     }
-    val sector = (((angleDeg + 22.5) % 360.0) / 45.0).toInt().coerceIn(0, 7)
-    return when (sector) {
-        0 -> "East"
-        1 -> "Northeast"
-        2 -> "North"
-        3 -> "Northwest"
-        4 -> "West"
-        5 -> "Southwest"
-        6 -> "South"
-        7 -> "Southeast"
-        else -> "East"
+    val turnLabel = when (turns.toString()) {
+        "RR" -> "Right, Right"
+        "LL" -> "Left, Left"
+        "RL" -> "Right, Left"
+        "LR" -> "Left, Right"
+        "R" -> "Right turn"
+        "L" -> "Left turn"
+        else -> null
     }
+    return if (turnLabel != null) "$compass · $turnLabel" else compass
 }

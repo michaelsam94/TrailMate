@@ -5,11 +5,16 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import com.example.core.Result
+import com.example.data.local.db.NodeEntity
 import com.example.data.local.db.OsmCacheDao
 import com.example.data.local.db.RouteDao
+import com.example.data.local.db.WayEntity
 import com.example.data.remote.api.OverpassService
 import com.example.domain.error.DomainError
+import com.example.data.routing.LoopRouteGenerator
+import com.example.domain.model.Route
 import com.example.domain.model.SurfaceType
+import com.example.domain.model.Waypoint
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -26,6 +31,7 @@ class RouteRepositoryImplTest {
     private val routeDao = mockk<RouteDao>(relaxed = true)
     private val osmCacheDao = mockk<OsmCacheDao>(relaxed = true)
     private val overpassService = mockk<OverpassService>(relaxed = true)
+    private val loopRouteGenerator = mockk<LoopRouteGenerator>(relaxed = true)
     private val connectivityManager = mockk<ConnectivityManager>(relaxed = true)
     private lateinit var repository: RouteRepositoryImpl
 
@@ -33,7 +39,7 @@ class RouteRepositoryImplTest {
     fun setUp() {
         every { context.getSystemService(ConnectivityManager::class.java) } returns connectivityManager
         setOffline()
-        repository = RouteRepositoryImpl(context, routeDao, osmCacheDao, overpassService)
+        repository = RouteRepositoryImpl(context, routeDao, osmCacheDao, overpassService, loopRouteGenerator)
     }
 
     private fun setOffline() {
@@ -110,5 +116,88 @@ class RouteRepositoryImplTest {
         val result = repository.clearExpiredCache()
         assertTrue(result is Result.Success)
         coVerify { routeDao.deleteOldRoutes(any()) }
+    }
+
+    @Test
+    fun `returns cached routes from loop generator when offline cache is populated`() = runTest {
+        val cachedRoutes = listOf(
+            Route(
+                id = "a",
+                waypoints = listOf(Waypoint(24.7, 46.6)),
+                distanceKm = 3.2,
+                estimatedDurationMinutes = 20,
+                safetyScore = 0.75f,
+                surfaceType = SurfaceType.MIXED,
+                elevationGainM = 10.0
+            ),
+            Route(
+                id = "b",
+                waypoints = listOf(Waypoint(24.71, 46.61)),
+                distanceKm = 3.2,
+                estimatedDurationMinutes = 21,
+                safetyScore = 0.70f,
+                surfaceType = SurfaceType.MIXED,
+                elevationGainM = 12.0
+            )
+        )
+        coEvery {
+            loopRouteGenerator.generateLoops(any(), any(), any(), any(), any())
+        } returns cachedRoutes
+
+        val blockKm = 0.35
+        val originLat = 24.7
+        val originLng = 46.6
+        val nodes = mutableListOf<NodeEntity>()
+        val ways = mutableListOf<WayEntity>()
+        var nodeId = 1L
+        var wayId = 1L
+
+        for (row in 0..4) {
+            for (col in 0..4) {
+                nodes += NodeEntity(
+                    id = nodeId,
+                    lat = originLat + row * blockKm / 111.0,
+                    lng = originLng + col * blockKm / (111.0 * kotlin.math.cos(Math.toRadians(originLat)))
+                )
+                nodeId++
+            }
+        }
+
+        fun nodeAt(row: Int, col: Int) = (row * 5 + col + 1).toLong()
+
+        for (row in 0..4) {
+            for (col in 0..4) {
+                if (col < 4) {
+                    ways += WayEntity(
+                        id = wayId++,
+                        surfaceType = "residential",
+                        nodeIds = "${nodeAt(row, col)},${nodeAt(row, col + 1)}"
+                    )
+                }
+                if (row < 4) {
+                    ways += WayEntity(
+                        id = wayId++,
+                        surfaceType = "residential",
+                        nodeIds = "${nodeAt(row, col)},${nodeAt(row + 1, col)}"
+                    )
+                }
+            }
+        }
+
+        coEvery { osmCacheDao.getAllNodes() } returns nodes
+        coEvery { osmCacheDao.getAllWays() } returns ways
+
+        val results = repository.generateRoute(
+            lat = nodes[12].lat,
+            lng = nodes[12].lng,
+            distanceKm = 3.2,
+            surfaceType = SurfaceType.MIXED,
+            avoidHighways = false,
+            maxElevationM = 200.0
+        ).toList()
+
+        val success = results.filterIsInstance<Result.Success<List<Route>>>().lastOrNull()
+        assertTrue(success != null, "Expected route generation success")
+        assertTrue((success as Result.Success).data.size == 2)
     }
 }
