@@ -1,13 +1,15 @@
 package com.example
 
 import android.app.Application
-import androidx.room.Room
 import com.example.core.Constants
 import com.example.data.local.datastore.UserPrefsManager
 import com.example.data.local.db.TrailMateDatabase
 import com.example.data.remote.api.OverpassService
 import com.example.data.repository.*
+import com.example.data.work.WorkManagerSessionSaveScheduler
+import com.example.domain.repository.SessionSaveScheduler
 import com.example.domain.usecase.*
+import com.example.service.NotificationHelper
 import com.google.android.gms.location.LocationServices
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
@@ -30,6 +32,8 @@ class TrailMateApplication : Application() {
     lateinit var routeRepository: RouteRepositoryImpl
     lateinit var sessionRepository: SessionRepositoryImpl
     lateinit var userPrefsRepository: UserPrefsRepositoryImpl
+    lateinit var sessionSaveScheduler: SessionSaveScheduler
+    lateinit var notificationHelper: NotificationHelper
 
     // Use Cases
     lateinit var generateRouteUseCase: GenerateRouteUseCase
@@ -44,21 +48,21 @@ class TrailMateApplication : Application() {
 
         // Init OSMDroid Configuration
         Configuration.getInstance().apply {
-            userAgentValue = packageName
+            load(this@TrailMateApplication, getSharedPreferences("${packageName}_preferences", MODE_PRIVATE))
+            userAgentValue = "TrailMateNavigation/2.0 (Android; $packageName; contact: support@trailmateapp.io)"
             val osmCacheFile = File(externalCacheDir ?: cacheDir, "osmdroid")
             osmdroidTileCache = osmCacheFile
             tileFileSystemCacheTrimBytes = Constants.OSM_TILE_CACHE_MAX_MB * 1024 * 1024L
         }
 
         // ROOM Database
-        database = Room.databaseBuilder(
-            applicationContext,
-            TrailMateDatabase::class.java,
-            "trailmate_database"
-        ).fallbackToDestructiveMigration().build()
+        database = TrailMateDatabase.getInstance(applicationContext)
 
         // Datastore Prefs
         prefsManager = UserPrefsManager(applicationContext)
+        notificationHelper = NotificationHelper(applicationContext)
+        notificationHelper.ensureChannelCreated()
+        sessionSaveScheduler = WorkManagerSessionSaveScheduler(applicationContext)
 
         // API Networking with Retrofit & Moshi
         val moshi = Moshi.Builder()
@@ -72,6 +76,13 @@ class TrailMateApplication : Application() {
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
             .writeTimeout(20, TimeUnit.SECONDS)
+            .addInterceptor { chain ->
+                val originalRequest = chain.request()
+                val requestWithUserAgent = originalRequest.newBuilder()
+                    .header("User-Agent", "TrailMateNavigation/2.0 (Android; $packageName; contact: support@trailmateapp.io)")
+                    .build()
+                chain.proceed(requestWithUserAgent)
+            }
             .addInterceptor(logging)
             .build()
 
@@ -98,6 +109,6 @@ class TrailMateApplication : Application() {
         updateUserPrefsUseCase = UpdateUserPrefsUseCase(userPrefsRepository)
         startSessionUseCase = StartSessionUseCase()
         pauseSessionUseCase = PauseSessionUseCase()
-        stopSessionUseCase = StopSessionUseCase(sessionRepository)
+        stopSessionUseCase = StopSessionUseCase(sessionSaveScheduler)
     }
 }

@@ -47,6 +47,9 @@ interface OsmCacheDao {
     @Query("SELECT * FROM osm_nodes WHERE id = :id")
     suspend fun getNodeById(id: Long): NodeEntity?
 
+    @Query("SELECT * FROM osm_nodes")
+    suspend fun getAllNodes(): List<NodeEntity>
+
     @Query("SELECT * FROM osm_ways")
     suspend fun getAllWays(): List<WayEntity>
 

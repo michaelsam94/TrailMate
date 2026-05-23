@@ -20,4 +20,5 @@ interface RouteRepository {
     suspend fun clearExpiredCache(): Result<Unit, DomainError>
     suspend fun saveRoute(route: Route)
     suspend fun getRouteById(id: String): Route?
+    suspend fun getCacheAgeDays(): Int
 }

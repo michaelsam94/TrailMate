@@ -32,6 +32,18 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         val app = application as TrailMateApplication
 
+        // Request location permissions on startup
+        if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != android.content.pm.PackageManager.PERMISSION_GRANTED &&
+            checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(
+                arrayOf(
+                    android.Manifest.permission.ACCESS_FINE_LOCATION,
+                    android.Manifest.permission.ACCESS_COARSE_LOCATION
+                ),
+                1001
+            )
+        }
+
         setContent {
             MyApplicationTheme {
                 val navController = rememberNavController()

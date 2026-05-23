@@ -1,21 +1,69 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# TrailMate
 
-# Run and deploy your AI Studio app
+Hyper-local run and walk route planner for Android. TrailMate uses GPS and OpenStreetMap data to generate loop routes, tracks active sessions, and stores history offline.
 
-This contains everything you need to run your app locally.
+## Architecture
 
-View your app in AI Studio: https://ai.studio/apps/f304aaa6-24a8-4b43-ba49-20a5efca9da8
+```
+presentation/ (Compose screens + ViewModels)
+       ↓
+domain/ (use cases, models, repository interfaces — no Android imports)
+       ↓
+data/ (Room, Retrofit/Overpass, DataStore, WorkManager, location)
+```
 
-## Run Locally
+- **UI**: Jetpack Compose + Navigation Compose
+- **DI**: Manual wiring in `TrailMateApplication`
+- **Maps**: OSMDroid with local tile cache (100 MB)
+- **Routes**: Overpass API with Room OSM graph cache (7-day expiry)
+- **Sessions**: WorkManager `SaveSessionWorker` persists completed runs
+- **Active tracking**: `ActiveRunForegroundService` with pause/stop notification actions
 
-**Prerequisites:**  [Android Studio](https://developer.android.com/studio)
+## Build and run
 
+**Prerequisites:** Android Studio, JDK 17, Android SDK 36
 
-1. Open Android Studio
-2. Select **Open** and choose the directory containing this project
-3. Allow Android Studio to fix any incompatibilities as it imports the project.
-4. Create a file named `.env` in the project directory and set `GEMINI_API_KEY` in that file to your Gemini API key (see `.env.example` for an example)
-5. Remove this line from the app's `build.gradle.kts` file: `signingConfig = signingConfigs.getByName("debugConfig")`
-6. Run the app on an emulator or physical device
+1. Open the project in Android Studio
+2. Sync Gradle
+3. Run on an emulator or device with location enabled
+
+```bash
+./gradlew assembleDebug
+adb install app/build/outputs/apk/debug/app-debug.apk
+```
+
+## Permissions
+
+| Permission | Purpose |
+|---|---|
+| `ACCESS_FINE_LOCATION` | GPS route planning and live tracking |
+| `ACCESS_COARSE_LOCATION` | Fallback when fine location is denied |
+| `FOREGROUND_SERVICE` / `FOREGROUND_SERVICE_LOCATION` | Active run notification |
+| `INTERNET` / `ACCESS_NETWORK_STATE` | Overpass API and connectivity checks |
+| `WAKE_LOCK` | Keep CPU awake during active (non-paused) runs |
+
+## Run unit tests
+
+```bash
+./gradlew testDebugUnitTest
+```
+
+Reports: `app/build/reports/tests/testDebugUnitTest/`
+
+Key test suites:
+- `DistanceInputValidatorTest`
+- `RouteMapperTest`
+- `GenerateRouteUseCaseTest`
+- `RouteRepositoryImplTest` (Robolectric + in-memory Room)
+- `ActiveRunViewModelTest`
+- `LocationRepositoryImplTest`
+
+## Run instrumented tests
+
+```bash
+./gradlew connectedDebugAndroidTest
+```
+
+## CI
+
+GitHub Actions runs `./gradlew assembleDebug` and `./gradlew testDebugUnitTest` on push/PR to `main` and `develop`.

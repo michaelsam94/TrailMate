@@ -1,12 +1,18 @@
 package com.example.data.remote.api
 
 import com.example.data.remote.dto.OverpassResponse
-import retrofit2.http.GET
-import retrofit2.http.Query
+import retrofit2.http.POST
+import retrofit2.http.FormUrlEncoded
+import retrofit2.http.Field
+import retrofit2.http.Url
 
 interface OverpassService {
-    @GET("interpreter")
+    @FormUrlEncoded
+    @POST
     suspend fun queryOverpass(
-        @Query("data", encoded = true) data: String
+        @Url url: String,
+        @Field("data") data: String
     ): OverpassResponse
 }
+
+

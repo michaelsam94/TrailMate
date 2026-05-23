@@ -18,7 +18,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import android.content.Context
 import com.example.TrailMateApplication
+import com.example.core.util.NetworkUtils
 import com.example.domain.model.Route
 import com.example.domain.model.SurfaceType
 import com.example.domain.model.UserPrefs
@@ -35,15 +37,21 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import org.osmdroid.util.GeoPoint
 import java.util.Locale
+import kotlin.math.*
 
 sealed interface PlanRouteUiState {
     object Idle : PlanRouteUiState
     object Loading : PlanRouteUiState
-    data class Success(val routes: List<Route>) : PlanRouteUiState
+    data class Success(
+        val routes: List<Route>,
+        val usingCachedData: Boolean = false,
+        val cacheAgeDays: Int = 0
+    ) : PlanRouteUiState
     data class Error(val error: DomainError) : PlanRouteUiState
 }
 
 class PlanRouteViewModel(
+    private val appContext: Context,
     private val generateRouteUseCase: GenerateRouteUseCase,
     private val userPrefsRepository: UserPrefsRepository,
     private val routeRepository: RouteRepository
@@ -65,6 +73,7 @@ class PlanRouteViewModel(
 
     fun generatePlan(distanceKm: Double, surfaceType: SurfaceType) {
         viewModelScope.launch {
+            val wasOffline = !NetworkUtils.isOnline(appContext)
             generateRouteUseCase(
                 distanceKm = distanceKm,
                 surfaceType = surfaceType,
@@ -76,7 +85,12 @@ class PlanRouteViewModel(
                         _uiState.value = PlanRouteUiState.Loading
                     }
                     is Result.Success -> {
-                        _uiState.value = PlanRouteUiState.Success(result.data)
+                        val cacheAge = if (wasOffline) routeRepository.getCacheAgeDays() else 0
+                        _uiState.value = PlanRouteUiState.Success(
+                            routes = result.data,
+                            usingCachedData = wasOffline,
+                            cacheAgeDays = cacheAge
+                        )
                     }
                     is Result.Failure -> {
                         _uiState.value = PlanRouteUiState.Error(result.error)
@@ -93,6 +107,7 @@ fun rememberPlanRouteViewModel(app: TrailMateApplication): PlanRouteViewModel {
         factory = object : ViewModelProvider.Factory {
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
                 return PlanRouteViewModel(
+                    appContext = app.applicationContext,
                     generateRouteUseCase = app.generateRouteUseCase,
                     userPrefsRepository = app.userPrefsRepository,
                     routeRepository = app.routeRepository
@@ -175,7 +190,13 @@ fun PlanRouteScreen(
                         )
                         Spacer(modifier = Modifier.height(16.dp))
                         Text(
-                            text = "Failed to plan routes.",
+                            text = when (state.error) {
+                                is DomainError.PermissionDenied -> "Location Permission Denied"
+                                is DomainError.LocationUnavailable -> "Location Unavailable"
+                                is DomainError.NetworkUnavailable -> "Network Unreachable"
+                                is DomainError.RouteGenerationFailed -> "No Street Routes Found"
+                                else -> "Failed to Plan Routes"
+                            },
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.error,
@@ -183,7 +204,13 @@ fun PlanRouteScreen(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "OpenStreetMap Overpass servers are currently unreachable. Please verify your connection and try again.",
+                            text = when (state.error) {
+                                is DomainError.PermissionDenied -> "Location permission is required to plan routes. Please grant location access to TrailMate in your device settings."
+                                is DomainError.LocationUnavailable -> "We couldn't retrieve your current location. Please verify that location services are enabled on your device."
+                                is DomainError.NetworkUnavailable -> "No internet connection detected. Please check your network connection and try again."
+                                is DomainError.RouteGenerationFailed -> "We couldn't build loop routes on nearby streets. Try a different distance or surface type, or move closer to walkable paths."
+                                else -> "OpenStreetMap Overpass servers are currently unreachable. Please verify your connection and try again."
+                            },
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center
@@ -226,8 +253,29 @@ fun PlanRouteScreen(
                                 OsmMapView(
                                     center = mapCenter,
                                     routePoints = mapPoints,
+                                    enableOffset = true,
                                     modifier = Modifier.fillMaxSize()
                                 )
+
+                                if (state.usingCachedData) {
+                                    AssistChip(
+                                        onClick = {},
+                                        enabled = false,
+                                        label = {
+                                            Text(
+                                                text = if (state.cacheAgeDays > 0) {
+                                                    "Using cached data (${state.cacheAgeDays} days old)"
+                                                } else {
+                                                    "Offline — using cached map data"
+                                                },
+                                                fontSize = 11.sp
+                                            )
+                                        },
+                                        modifier = Modifier
+                                            .align(Alignment.TopStart)
+                                            .padding(16.dp)
+                                    )
+                                }
 
                                 // Floating bubble to switch through choices
                                 FloatingActionButton(
@@ -275,7 +323,7 @@ fun PlanRouteScreen(
                                             modifier = Modifier.fillMaxWidth()
                                         ) {
                                             Text(
-                                                text = "Option ${activeIndex + 1}: ${activeRoute.surfaceType.name.lowercase().capitalize(Locale.ROOT)} Trace",
+                                                text = "Option ${activeIndex + 1} (${calculateRouteDirection(activeRoute)}): ${activeRoute.surfaceType.name.lowercase().capitalize(Locale.ROOT)} Trace",
                                                 style = MaterialTheme.typography.titleMedium,
                                                 fontWeight = FontWeight.Bold,
                                                 color = MaterialTheme.colorScheme.onSurface
@@ -311,17 +359,23 @@ fun PlanRouteScreen(
                                                 "${activeRoute.distanceKm} km"
                                             }
 
-                                            Column {
+                                            Column(modifier = Modifier.weight(1f)) {
                                                 Text("Distance", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
                                                 Text(statsDistanceValue, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.primary)
                                             }
-                                            Column {
+                                            Column(
+                                                modifier = Modifier.weight(1.2f),
+                                                horizontalAlignment = Alignment.CenterHorizontally
+                                            ) {
                                                 Text("Est. Duration", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
                                                 Text("${activeRoute.estimatedDurationMinutes} mins", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
                                             }
-                                            Column {
+                                            Column(
+                                                modifier = Modifier.weight(1.1f),
+                                                horizontalAlignment = Alignment.End
+                                            ) {
                                                 Text("Elevation Gain", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
-                                                Text("${activeRoute.elevationGainM} m", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
+                                                Text("${Math.round(activeRoute.elevationGainM)} m", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
                                             }
                                         }
 
@@ -355,5 +409,46 @@ fun PlanRouteScreen(
                 }
             }
         }
+    }
+}
+
+private fun calculateRouteDirection(route: Route): String {
+    val waypoints = route.waypoints
+    if (waypoints.size < 3) return "Unknown"
+    val start = waypoints.first()
+    
+    var maxDist = 0.0
+    var furthest = start
+    val latRad = start.lat * PI / 180.0
+    val cosLat = cos(latRad)
+    
+    for (wp in waypoints) {
+        val dLat = wp.lat - start.lat
+        val dLngScaled = (wp.lng - start.lng) * cosLat
+        val distSq = dLat * dLat + dLngScaled * dLngScaled
+        if (distSq > maxDist) {
+            maxDist = distSq
+            furthest = wp
+        }
+    }
+    
+    val dLat = furthest.lat - start.lat
+    val dLngScaled = (furthest.lng - start.lng) * cosLat
+    val angleRad = atan2(dLat, dLngScaled)
+    var angleDeg = angleRad * 180.0 / PI
+    if (angleDeg < 0) {
+        angleDeg += 360.0
+    }
+    val sector = (((angleDeg + 22.5) % 360.0) / 45.0).toInt().coerceIn(0, 7)
+    return when (sector) {
+        0 -> "East"
+        1 -> "Northeast"
+        2 -> "North"
+        3 -> "Northwest"
+        4 -> "West"
+        5 -> "Southwest"
+        6 -> "South"
+        7 -> "Southeast"
+        else -> "East"
     }
 }

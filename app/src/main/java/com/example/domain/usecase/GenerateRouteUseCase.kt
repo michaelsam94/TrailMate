@@ -6,7 +6,8 @@ import com.example.domain.error.DomainError
 import com.example.domain.repository.LocationRepository
 import com.example.domain.repository.RouteRepository
 import com.example.core.Result
-import com.example.core.Constants
+import com.example.core.util.DistanceInputValidator
+import com.example.core.util.DistanceValidation
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.emitAll
@@ -23,30 +24,30 @@ class GenerateRouteUseCase(
     ): Flow<Result<List<Route>, DomainError>> = flow {
         emit(Result.Loading)
 
-        if (distanceKm < Constants.ROUTE_DISTANCE_MIN_KM || distanceKm > Constants.ROUTE_DISTANCE_MAX_KM) {
-            emit(Result.Failure(DomainError.DistanceOutOfRange(distanceKm)))
-            return@flow
-        }
-
-        when (val locationResult = locationRepository.lastKnownLocation()) {
-            is Result.Success -> {
-                val waypoint = locationResult.data
-                emitAll(
-                    routeRepository.generateRoute(
-                        lat = waypoint.lat,
-                        lng = waypoint.lng,
-                        distanceKm = distanceKm,
-                        surfaceType = surfaceType,
-                        avoidHighways = avoidHighways,
-                        maxElevationM = maxElevationM
-                    )
-                )
+        when (val validation = DistanceInputValidator.validate(distanceKm)) {
+            is DistanceValidation.Invalid -> {
+                emit(Result.Failure(validation.error))
+                return@flow
             }
-            is Result.Failure -> {
-                emit(Result.Failure(DomainError.LocationUnavailable))
-            }
-            is Result.Loading -> {
-                emit(Result.Loading)
+            is DistanceValidation.Valid -> {
+                val validatedDistance = validation.roundedKm
+                when (val locationResult = locationRepository.lastKnownLocation()) {
+                    is Result.Success -> {
+                        val waypoint = locationResult.data
+                        emitAll(
+                            routeRepository.generateRoute(
+                                lat = waypoint.lat,
+                                lng = waypoint.lng,
+                                distanceKm = validatedDistance,
+                                surfaceType = surfaceType,
+                                avoidHighways = avoidHighways,
+                                maxElevationM = maxElevationM
+                            )
+                        )
+                    }
+                    is Result.Failure -> emit(Result.Failure(locationResult.error))
+                    is Result.Loading -> emit(Result.Loading)
+                }
             }
         }
     }

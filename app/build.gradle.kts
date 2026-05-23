@@ -55,7 +55,15 @@ android {
     compose = true
     buildConfig = true
   }
-  testOptions { unitTests { isIncludeAndroidResources = true } }
+  testOptions {
+    unitTests.isReturnDefaultValues = true
+    unitTests.all { it.useJUnitPlatform() }
+    unitTests { isIncludeAndroidResources = true }
+  }
+}
+
+tasks.withType<Test> {
+  useJUnitPlatform()
 }
 
 // Configure the Secrets Gradle Plugin to use .env and .env.example files
@@ -101,6 +109,12 @@ dependencies {
   implementation(libs.play.services.location)
   implementation(libs.osmdroid.android)
   implementation(libs.retrofit)
+  implementation(libs.workmanager)
+  testImplementation(libs.junit5)
+  testRuntimeOnly(libs.junit5.engine)
+  testRuntimeOnly(libs.junit5.platform.launcher)
+  testImplementation(libs.mockk)
+  testImplementation(libs.turbine)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)

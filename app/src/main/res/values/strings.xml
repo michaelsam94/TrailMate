@@ -1,3 +1,13 @@
 <resources>
     <string name="app_name">TrailMate</string>
+    <string name="notification_channel_name">Active Run</string>
+    <string name="notification_channel_description">Shows live stats while a run or walk is in progress</string>
+    <string name="notification_run_active">Run in progress</string>
+    <string name="notification_run_paused">Run paused</string>
+    <string name="notification_run_tracking">Tracking your session</string>
+    <string name="notification_action_pause">Pause</string>
+    <string name="notification_action_resume">Resume</string>
+    <string name="notification_action_stop">Stop</string>
+    <string name="cached_data_chip">Using cached data (%1$d days old)</string>
+    <string name="offline_chip">Offline — using cached map data</string>
 </resources>
