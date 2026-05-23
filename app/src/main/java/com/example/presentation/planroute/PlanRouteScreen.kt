@@ -35,6 +35,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.osmdroid.util.GeoPoint
 import java.util.Locale
 import kotlin.math.*
@@ -73,7 +75,9 @@ class PlanRouteViewModel(
 
     fun generatePlan(distanceKm: Double, surfaceType: SurfaceType) {
         viewModelScope.launch {
-            val wasOffline = !NetworkUtils.isOnline(appContext)
+            val wasOffline = withContext(Dispatchers.IO) {
+                !NetworkUtils.isOnline(appContext)
+            }
             generateRouteUseCase(
                 distanceKm = distanceKm,
                 surfaceType = surfaceType,
@@ -85,7 +89,11 @@ class PlanRouteViewModel(
                         _uiState.value = PlanRouteUiState.Loading
                     }
                     is Result.Success -> {
-                        val cacheAge = if (wasOffline) routeRepository.getCacheAgeDays() else 0
+                        val cacheAge = if (wasOffline) {
+                            withContext(Dispatchers.IO) { routeRepository.getCacheAgeDays() }
+                        } else {
+                            0
+                        }
                         _uiState.value = PlanRouteUiState.Success(
                             routes = result.data,
                             usingCachedData = wasOffline,

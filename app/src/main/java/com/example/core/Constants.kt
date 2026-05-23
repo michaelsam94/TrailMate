@@ -8,7 +8,7 @@ object Constants {
     const val ROUTE_DISTANCE_MAX_KM                = 50.0
     const val ROUTE_DISTANCE_STEP_KM               = 0.5
     const val ROUTE_DISTANCE_TOLERANCE_PERCENT     = 0.10
-    const val ROUTE_OPTION_COUNT                   = 3
+    const val ROUTE_OPTION_COUNT                   = 4
     const val CACHE_EXPIRY_DAYS                    = 7L
     const val OSM_TILE_CACHE_MAX_MB                = 100
     const val NOTIFICATION_ID_ACTIVE_RUN           = 1001

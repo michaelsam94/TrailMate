@@ -11,6 +11,8 @@ import com.example.core.util.DistanceValidation
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.Dispatchers
 
 class GenerateRouteUseCase(
     private val locationRepository: LocationRepository,
@@ -50,5 +52,5 @@ class GenerateRouteUseCase(
                 }
             }
         }
-    }
+    }.flowOn(Dispatchers.IO)
 }

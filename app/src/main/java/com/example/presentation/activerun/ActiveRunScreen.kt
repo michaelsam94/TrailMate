@@ -45,6 +45,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.osmdroid.util.GeoPoint
 import java.util.UUID
 import java.util.Locale
@@ -93,7 +95,9 @@ class ActiveRunViewModel(
         }
 
         viewModelScope.launch {
-            val dbRoute = routeRepository.getRouteById(routeId)
+            val dbRoute = withContext(Dispatchers.IO) {
+                routeRepository.getRouteById(routeId)
+            }
             _route.value = dbRoute
 
             val sessionId = UUID.randomUUID().toString()

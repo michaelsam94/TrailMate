@@ -15,6 +15,9 @@ import com.example.core.Result
 import com.example.core.Constants
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.util.UUID
 import kotlin.math.*
 
@@ -108,7 +111,9 @@ class RouteRepositoryImpl(
 
             val graph = buildStreetGraphFromOverpass(nodesMap, ways, surfaceType)
             if (graph != null) {
-                val parsedRoutes = findStreetLoopRoutes(graph, lat, lng, distanceKm, surfaceType)
+                val parsedRoutes = withContext(Dispatchers.Default) {
+                    findStreetLoopRoutes(graph, lat, lng, distanceKm, surfaceType)
+                }
                 if (parsedRoutes.isNotEmpty()) {
                     routeDao.insertAllRoutes(parsedRoutes.map { it.toEntity() })
                     emit(Result.Success(parsedRoutes))
@@ -120,7 +125,9 @@ class RouteRepositoryImpl(
         try {
             val cachedGraph = buildStreetGraphFromCache(surfaceType)
             if (cachedGraph != null) {
-                val cachedRoutes = findStreetLoopRoutes(cachedGraph, lat, lng, distanceKm, surfaceType)
+                val cachedRoutes = withContext(Dispatchers.Default) {
+                    findStreetLoopRoutes(cachedGraph, lat, lng, distanceKm, surfaceType)
+                }
                 if (cachedRoutes.isNotEmpty()) {
                     routeDao.insertAllRoutes(cachedRoutes.map { it.toEntity() })
                     emit(Result.Success(cachedRoutes))
@@ -140,7 +147,7 @@ class RouteRepositoryImpl(
                 }
             )
         )
-    }
+    }.flowOn(Dispatchers.IO)
 
     override suspend fun getCacheAgeDays(): Int {
         return try {
@@ -190,8 +197,11 @@ class RouteRepositoryImpl(
 
     private data class LoopCandidate(
         val route: Route,
+        val pathNodeIds: List<Long>,
         val middleNodes: Set<Long>,
-        val distanceError: Double
+        val distanceError: Double,
+        val initialBearingDeg: Double,
+        val turnSignature: String
     )
 
     private fun isWayAllowed(highway: String, leisure: String?, surfaceType: SurfaceType): Boolean {
@@ -323,6 +333,104 @@ class RouteRepositoryImpl(
         return intersection.size.toDouble() / min(a.size, b.size)
     }
 
+    private fun normalizeEdge(u: Long, v: Long): Pair<Long, Long> =
+        if (u < v) u to v else v to u
+
+    private fun pathDistanceKm(nodes: Map<Long, Waypoint>, path: List<Long>): Double {
+        var total = 0.0
+        for (i in 0 until path.size - 1) {
+            val a = nodes[path[i]] ?: continue
+            val b = nodes[path[i + 1]] ?: continue
+            total += calculateDistance(a.lat, a.lng, b.lat, b.lng)
+        }
+        return total
+    }
+
+    private fun buildTurnSignature(
+        path: List<Long>,
+        nodes: Map<Long, Waypoint>,
+        adjacencyList: Map<Long, Set<Long>>
+    ): String {
+        if (path.size < 3) return ""
+        val turns = StringBuilder()
+        for (i in 1 until path.size - 1) {
+            if ((adjacencyList[path[i]]?.size ?: 0) < 3) continue
+            val prev = nodes[path[i - 1]] ?: continue
+            val curr = nodes[path[i]] ?: continue
+            val next = nodes[path[i + 1]] ?: continue
+            val inBearing = bearingDegrees(prev.lat, prev.lng, curr.lat, curr.lng)
+            val outBearing = bearingDegrees(curr.lat, curr.lng, next.lat, next.lng)
+            val delta = ((outBearing - inBearing + 540.0) % 360.0) - 180.0
+            turns.append(
+                when {
+                    abs(delta) < 25.0 -> 'S'
+                    delta > 0 -> 'R'
+                    else -> 'L'
+                }
+            )
+        }
+        return turns.toString()
+    }
+
+    /** Enumerate paths covering distinct left/right choices at the first few junctions. */
+    private fun enumerateJunctionPrefixes(
+        graph: StreetGraph,
+        startNodeId: Long,
+        maxDecisionPoints: Int = 3,
+        maxResults: Int = 32
+    ): List<List<Long>> {
+        val adjacencyList = graph.adjacencyList
+        val results = mutableListOf<List<Long>>()
+        val seen = mutableSetOf<String>()
+
+        data class State(val path: List<Long>, val decisionsMade: Int)
+
+        val stack = ArrayDeque<State>()
+        for (neighbor in adjacencyList[startNodeId].orEmpty().sorted()) {
+            stack.add(State(listOf(startNodeId, neighbor), 0))
+        }
+
+        while (stack.isNotEmpty() && results.size < maxResults) {
+            val state = stack.removeLast()
+            val path = state.path
+            if (path.size < 2) continue
+
+            val current = path.last()
+            val prev = path[path.size - 2]
+            val forwardNeighbors = adjacencyList[current].orEmpty().filter { it != prev }.sorted()
+            val isDecisionPoint = (adjacencyList[current]?.size ?: 0) >= 3
+
+            val decisionsMade = if (isDecisionPoint) state.decisionsMade + 1 else state.decisionsMade
+
+            if (decisionsMade >= 1) {
+                val key = path.joinToString("-")
+                if (seen.add(key)) results.add(path)
+            }
+
+            if (decisionsMade >= maxDecisionPoints || path.size >= 24) continue
+
+            for (next in forwardNeighbors) {
+                stack.add(State(path + next, decisionsMade))
+            }
+        }
+
+        return results
+    }
+
+    private fun buildEdgePenalties(
+        candidates: List<LoopCandidate>,
+        multiplier: Double
+    ): Map<Pair<Long, Long>, Double> {
+        val penalties = mutableMapOf<Pair<Long, Long>, Double>()
+        for (candidate in candidates) {
+            for ((u, v) in candidate.pathNodeIds.zipWithNext()) {
+                val edge = normalizeEdge(u, v)
+                penalties[edge] = max(penalties[edge] ?: 1.0, multiplier)
+            }
+        }
+        return penalties
+    }
+
     private fun selectDiverseRoutes(
         candidates: List<LoopCandidate>,
         targetCount: Int
@@ -332,12 +440,36 @@ class RouteRepositoryImpl(
         val sorted = candidates.sortedBy { it.distanceError }
         val selected = mutableListOf<LoopCandidate>()
 
-        for (maxOverlap in listOf(0.20, 0.30, 0.40, 0.55)) {
+        for ((maxOverlap, minBearingSep, allowSameTurns) in listOf(
+            Triple(0.15, 70.0, false),
+            Triple(0.25, 55.0, false),
+            Triple(0.35, 40.0, true),
+            Triple(0.50, 25.0, true)
+        )) {
             for (candidate in sorted) {
                 if (selected.size >= targetCount) break
                 if (selected.any { it.route.id == candidate.route.id }) continue
-                val worstOverlap = selected.maxOfOrNull { overlapRatio(candidate.middleNodes, it.middleNodes) } ?: 0.0
-                if (worstOverlap <= maxOverlap) {
+
+                val worstMiddleOverlap = selected.maxOfOrNull {
+                    overlapRatio(candidate.middleNodes, it.middleNodes)
+                } ?: 0.0
+                val worstPathOverlap = selected.maxOfOrNull {
+                    overlapRatio(candidate.pathNodeIds.toSet(), it.pathNodeIds.toSet())
+                } ?: 0.0
+                val worstOverlap = max(worstMiddleOverlap, worstPathOverlap)
+
+                val minSep = selected.minOfOrNull {
+                    angularSeparation(candidate.initialBearingDeg, it.initialBearingDeg)
+                } ?: 360.0
+
+                val turnClash = !allowSameTurns &&
+                    candidate.turnSignature.isNotEmpty() &&
+                    selected.any {
+                        it.turnSignature.isNotEmpty() &&
+                            it.turnSignature == candidate.turnSignature
+                    }
+
+                if (worstOverlap <= maxOverlap && minSep >= minBearingSep && !turnClash) {
                     selected.add(candidate)
                 }
             }
@@ -370,7 +502,7 @@ class RouteRepositoryImpl(
                     seenSignatures = seenSignatures
                 )
             )
-            if (allCandidates.size >= Constants.ROUTE_OPTION_COUNT * 6) break
+            if (allCandidates.size >= Constants.ROUTE_OPTION_COUNT * 12) break
         }
 
         if (allCandidates.isEmpty()) return emptyList()
@@ -399,12 +531,16 @@ class RouteRepositoryImpl(
     ): List<LoopCandidate> {
         val nodes = graph.nodes
         val adjacencyList = graph.adjacencyList
+        val targetHalfDist = targetDistanceKm / 2.2
+        val defaultHighways = defaultHighwaysForSurface(surfaceType)
+        val candidates = mutableListOf<LoopCandidate>()
 
         data class PathInfo(val distanceKm: Double, val parentId: Long?)
 
         fun runDijkstra(
             start: Long,
-            blockedEdges: Set<Pair<Long, Long>> = emptySet()
+            blockedEdges: Set<Pair<Long, Long>> = emptySet(),
+            edgePenalties: Map<Pair<Long, Long>, Double> = emptyMap()
         ): Map<Long, PathInfo> {
             val distances = mutableMapOf<Long, PathInfo>()
             distances[start] = PathInfo(0.0, null)
@@ -420,13 +556,14 @@ class RouteRepositoryImpl(
 
                 val neighbors = adjacencyList[u] ?: continue
                 for (v in neighbors) {
-                    val edge = if (u < v) u to v else v to u
+                    val edge = normalizeEdge(u, v)
                     if (blockedEdges.contains(edge)) continue
 
                     val nodeU = nodes[u] ?: continue
                     val nodeV = nodes[v] ?: continue
                     val edgeDist = calculateDistance(nodeU.lat, nodeU.lng, nodeV.lat, nodeV.lng)
-                    val newDist = distU + edgeDist
+                    val penalty = edgePenalties[edge] ?: 1.0
+                    val newDist = distU + edgeDist * penalty
 
                     val bestV = distances[v]?.distanceKm ?: Double.MAX_VALUE
                     if (newDist < bestV) {
@@ -438,13 +575,11 @@ class RouteRepositoryImpl(
             return distances
         }
 
-        val forwardPaths = runDijkstra(startNodeId)
-        val targetHalfDist = targetDistanceKm / 2.2
-        val defaultHighways = defaultHighwaysForSurface(surfaceType)
-
         fun buildLoopFromTurnaround(
             targetId: Long,
-            forward: Map<Long, PathInfo>
+            forward: Map<Long, PathInfo>,
+            requiredPrefix: List<Long>? = null,
+            requiredFirstHop: Long? = null
         ): LoopCandidate? {
             val path1 = mutableListOf<Long>()
             var curr: Long? = targetId
@@ -455,9 +590,15 @@ class RouteRepositoryImpl(
             path1.reverse()
             if (path1.size < 2) return null
 
-            val outboundEdges = path1.zipWithNext().map { (u, v) ->
-                if (u < v) u to v else v to u
-            }.toSet()
+            if (requiredFirstHop != null && path1.getOrNull(1) != requiredFirstHop) return null
+            if (requiredPrefix != null) {
+                if (path1.size < requiredPrefix.size) return null
+                for (i in requiredPrefix.indices) {
+                    if (path1[i] != requiredPrefix[i]) return null
+                }
+            }
+
+            val outboundEdges = path1.zipWithNext().map { (u, v) -> normalizeEdge(u, v) }.toSet()
             val returnPaths = runDijkstra(targetId, outboundEdges)
             if (!returnPaths.containsKey(startNodeId)) return null
 
@@ -480,6 +621,14 @@ class RouteRepositoryImpl(
             val routeWaypoints = fullPathNodes.mapNotNull { id -> nodes[id] }
             if (routeWaypoints.size < 4) return null
 
+            val startWp = nodes[startNodeId] ?: return null
+            val firstStepId = path1.getOrNull(1) ?: return null
+            val firstStepWp = nodes[firstStepId] ?: return null
+            val initialBearing = bearingDegrees(
+                startWp.lat, startWp.lng,
+                firstStepWp.lat, firstStepWp.lng
+            )
+
             var totalDist = 0.0
             for (i in 0 until routeWaypoints.size - 1) {
                 totalDist += calculateDistance(
@@ -496,38 +645,115 @@ class RouteRepositoryImpl(
                     surfaceType = surfaceType,
                     highways = defaultHighways
                 ),
+                pathNodeIds = fullPathNodes,
                 middleNodes = middleNodes,
-                distanceError = abs(totalDist - targetDistanceKm)
+                distanceError = abs(totalDist - targetDistanceKm),
+                initialBearingDeg = initialBearing,
+                turnSignature = buildTurnSignature(path1, nodes, adjacencyList)
             )
         }
 
-        fun getTurnaroundCandidates(minFactor: Double, maxFactor: Double): List<Pair<Long, Double>> {
-            val candidates = mutableListOf<Pair<Long, Double>>()
-            for ((id, pathInfo) in forwardPaths) {
+        fun getTurnaroundCandidates(
+            forward: Map<Long, PathInfo>,
+            minFactor: Double,
+            maxFactor: Double
+        ): List<Pair<Long, Double>> {
+            val turnaroundCandidates = mutableListOf<Pair<Long, Double>>()
+            for ((id, pathInfo) in forward) {
                 if (id == startNodeId) continue
                 val dist = pathInfo.distanceKm
                 if (dist in (targetHalfDist * minFactor)..(targetHalfDist * maxFactor)) {
-                    candidates.add(id to dist)
+                    turnaroundCandidates.add(id to dist)
                 }
             }
-            return candidates.sortedBy { abs(it.second - targetHalfDist) }
+            return turnaroundCandidates.sortedBy { abs(it.second - targetHalfDist) }
         }
 
-        val candidates = mutableListOf<LoopCandidate>()
-        val seenTurnarounds = mutableSetOf<Long>()
-
-        for ((minFactor, maxFactor, limit) in listOf(
-            Triple(0.4, 1.5, 100),
-            Triple(0.1, 3.0, 160)
-        )) {
-            for ((targetId, _) in getTurnaroundCandidates(minFactor, maxFactor).take(limit)) {
-                if (!seenTurnarounds.add(targetId)) continue
-                buildLoopFromTurnaround(targetId, forwardPaths)?.let { candidates.add(it) }
+        fun collectBestLoop(
+            forward: Map<Long, PathInfo>,
+            requiredPrefix: List<Long>? = null,
+            requiredFirstHop: Long? = null
+        ): LoopCandidate? {
+            var best: LoopCandidate? = null
+            for ((minFactor, maxFactor, limit) in listOf(
+                Triple(0.4, 1.5, 100),
+                Triple(0.1, 3.0, 160)
+            )) {
+                for ((targetId, _) in getTurnaroundCandidates(forward, minFactor, maxFactor).take(limit)) {
+                    buildLoopFromTurnaround(
+                        targetId, forward, requiredPrefix, requiredFirstHop
+                    )?.let { candidate ->
+                        if (best == null || candidate.distanceError < best!!.distanceError) {
+                            best = candidate
+                        }
+                    }
+                }
+                if (best != null) break
             }
-            if (candidates.size >= Constants.ROUTE_OPTION_COUNT * 4) break
+            return best
+        }
+
+        fun searchTurnarounds(
+            forward: Map<Long, PathInfo>,
+            limitPerPass: Int = Constants.ROUTE_OPTION_COUNT * 4
+        ) {
+            val seenTurnarounds = mutableSetOf<Long>()
+            for ((minFactor, maxFactor, limit) in listOf(
+                Triple(0.4, 1.5, 100),
+                Triple(0.1, 3.0, 160)
+            )) {
+                for ((targetId, _) in getTurnaroundCandidates(forward, minFactor, maxFactor).take(limit)) {
+                    if (!seenTurnarounds.add(targetId)) continue
+                    buildLoopFromTurnaround(targetId, forward)?.let { candidates.add(it) }
+                }
+                if (candidates.size >= limitPerPass) break
+            }
+        }
+
+        val forwardPaths = runDijkstra(startNodeId)
+
+        // Phase 1: one best loop per initial direction (left / right on current street).
+        val firstHopNeighbors = adjacencyList[startNodeId]?.toList().orEmpty()
+        for (firstHop in firstHopNeighbors) {
+            collectBestLoop(forwardPaths, requiredFirstHop = firstHop)?.let { candidates.add(it) }
+        }
+
+        // Phase 2: one best loop per distinct junction decision sequence (L/R at each crossing).
+        for (prefix in enumerateJunctionPrefixes(graph, startNodeId)) {
+            collectBestLoop(forwardPaths, requiredPrefix = prefix)?.let { candidates.add(it) }
+        }
+
+        // Phase 3: general search for distance-fit fallbacks.
+        searchTurnarounds(forwardPaths)
+
+        // Phase 4: penalize streets already used so later loops take different turns.
+        for (penalty in listOf(2.5, 5.0, 9.0)) {
+            if (candidates.size >= Constants.ROUTE_OPTION_COUNT * 8) break
+            val penalizedForward = runDijkstra(
+                startNodeId,
+                edgePenalties = buildEdgePenalties(candidates, penalty)
+            )
+            for (firstHop in firstHopNeighbors) {
+                collectBestLoop(penalizedForward, requiredFirstHop = firstHop)?.let { candidates.add(it) }
+            }
+            searchTurnarounds(penalizedForward, limitPerPass = Constants.ROUTE_OPTION_COUNT * 2)
         }
 
         return candidates
+    }
+
+    private fun bearingDegrees(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val lat1Rad = Math.toRadians(lat1)
+        val lat2Rad = Math.toRadians(lat2)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val y = sin(dLon) * cos(lat2Rad)
+        val x = cos(lat1Rad) * sin(lat2Rad) - sin(lat1Rad) * cos(lat2Rad) * cos(dLon)
+        return (Math.toDegrees(atan2(y, x)) + 360.0) % 360.0
+    }
+
+    private fun angularSeparation(a: Double, b: Double): Double {
+        val diff = abs(a - b) % 360.0
+        return min(diff, 360.0 - diff)
     }
 
     private fun defaultHighwaysForSurface(surfaceType: SurfaceType): List<String> {
